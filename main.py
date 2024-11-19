@@ -63,6 +63,22 @@ def calculate_image_difference(original, reconstructed):
     return np.abs(original - reconstructed)
 
 class CTScannerGUI:
+    def add_analysis_tools(self):
+    # Signal Intensity Profile
+        self.profile_frame = ttk.LabelFrame(self.master, text="Profile Analysis")
+        self.profile_button = ttk.Button(
+            self.profile_frame, 
+            text="Generate Profile",
+            command=self.generate_profile
+            )
+    
+    # Contrast Analysis
+        self.contrast_frame = ttk.LabelFrame(self.master, text="Contrast Analysis")
+        self.roi_selector = ttk.Button(
+            self.contrast_frame,
+            text="Select ROIs",
+            command=self.analyze_contrast
+    )
     def __init__(self, master):
         self.master = master
         self.master.title("Virtual CT Scanner")
@@ -87,7 +103,17 @@ class CTScannerGUI:
         
         self.result_label = tk.Label(master, text="")
         self.result_label.grid(row=2, column=0, padx=5, pady=5)
-        
+    def add_scanner_controls(self):
+        self.detector_type = ttk.Combobox(
+            self.param_frame,
+            values=["Linear", "Arc"]
+        )
+        self.step_angle = ttk.Scale(
+            self.param_frame,
+            from_=0.1,
+            to=5.0,
+            orient="horizontal"
+        )
     def run_scan(self):
         # Example parameters
         matrix_size = 256
