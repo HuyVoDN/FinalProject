@@ -1,169 +1,299 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
-import tkinter as tk
-from tkinter import ttk
-import scipy.ndimage as ndimage
+from skimage.transform import radon, iradon
+from skimage.draw import disk, rectangle
+import random
 
-def simulate_ct_scan(phantom, angles, num_detectors, detector_spacing, source_distance, matrix_size):
-    sinogram = np.zeros((len(angles), num_detectors))
-    
-    for i, theta in enumerate(angles):
-        rotated = ndimage.rotate(phantom, theta, reshape=False)
-        
-        for j in range(num_detectors):
-            detector_pos = (j - num_detectors//2) * detector_spacing
-            ray_path = np.linspace(
-                [-source_distance, detector_pos],
-                [source_distance, detector_pos],
-                num=matrix_size
-            )
-            sinogram[i, j] = np.sum(
-                ndimage.map_coordinates(rotated, ray_path.T, order=1)
-            ) * (2 * source_distance / matrix_size)
-    
-    return sinogram
+class VirtualCTScannerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Virtual CT Scanner")
+        self.root.geometry("800x600")
 
-def reconstruct_image(sinogram, angles, matrix_size):
-    reconstruction = np.zeros((matrix_size, matrix_size))
-    filtered_sinogram = np.apply_along_axis(
-        lambda x: np.convolve(x, np.array([1, -2, 1]), mode='same'),
-        axis=1,
-        arr=sinogram
-    )
-    
-    for i, theta in enumerate(angles):
-        projection = np.tile(filtered_sinogram[i], (matrix_size, 1))
-        projection_resized = np.resize(projection, (matrix_size, matrix_size))
-        rotated = ndimage.rotate(projection_resized, -theta, reshape=False)
-        reconstruction += rotated[:matrix_size, :matrix_size]
-    
-    return reconstruction / len(angles)
+        # Phantom selection
+        ttk.Label(root, text="Select Phantom:").grid(row=0, column=0, padx=10, pady=5, sticky='w')
+        self.phantom_var = tk.StringVar(value="Cylinder")
+        self.phantom_dropdown = ttk.Combobox(root, textvariable=self.phantom_var, values=["Cylinder", "Head"], state="readonly")
+        self.phantom_dropdown.grid(row=0, column=1, padx=10, pady=5, sticky='w')
+        self.phantom_dropdown.bind("<<ComboboxSelected>>", self.update_phantom_controls)
 
-def analyze_image(image, roi1, roi2):
-    y, x = np.ogrid[:image.shape[0], :image.shape[1]]
-    
-    mask1 = (x - roi1[0])**2 + (y - roi1[1])**2 <= roi1[2]**2
-    mask2 = (x - roi2[0])**2 + (y - roi2[1])**2 <= roi2[2]**2
-    
-    si1 = np.mean(image[mask1])
-    si2 = np.mean(image[mask2])
-    contrast = abs(si1 - si2) / ((si1 + si2) / 2)
-    
-    return si1, si2, contrast
+        # Matrix size
+        ttk.Label(root, text="Matrix Size:").grid(row=1, column=0, padx=10, pady=5, sticky='w')
+        self.matrix_size_var = tk.IntVar(value=400)  # Set default value to 400
+        self.matrix_size_spinner = ttk.Spinbox(root, from_=400, to=512, textvariable=self.matrix_size_var)  # Ensure minimum value is 400
+        self.matrix_size_spinner.grid(row=1, column=1, padx=10, pady=5, sticky='w')
 
-def get_intensity_profile(image, start_point, end_point):
-    num_points = 100
-    x = np.linspace(start_point[0], end_point[0], num_points)
-    y = np.linspace(start_point[1], end_point[1], num_points)
-    
-    return ndimage.map_coordinates(image, [y, x], order=1)
+        # Structure values and dimensions for cylinder
+        self.cylinder_controls = []
+        self.add_cylinder_controls(root)
 
-def calculate_image_difference(original, reconstructed):
-    return np.abs(original - reconstructed)
+        # Structure values and dimensions for head
+        self.head_controls = []
+        self.add_head_controls(root)
 
-class CTScannerGUI:
-    def add_analysis_tools(self):
-    # Signal Intensity Profile
-        self.profile_frame = ttk.LabelFrame(self.master, text="Profile Analysis")
-        self.profile_button = ttk.Button(
-            self.profile_frame, 
-            text="Generate Profile",
-            command=self.generate_profile
-            )
-    
-    # Contrast Analysis
-        self.contrast_frame = ttk.LabelFrame(self.master, text="Contrast Analysis")
-        self.roi_selector = ttk.Button(
-            self.contrast_frame,
-            text="Select ROIs",
-            command=self.analyze_contrast
-    )
-    def __init__(self, master):
-        self.master = master
-        self.master.title("Virtual CT Scanner")
-        
-        # Scanner Parameters Frame
-        self.param_frame = ttk.LabelFrame(master, text="Scanner Parameters")
-        self.param_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-        
-        # Detector Parameters
-        self.num_detectors = tk.Scale(
-            self.param_frame,
-            from_=50,
-            to=200,
-            label="Number of Detectors",
-            orient=tk.HORIZONTAL
-        )
-        self.num_detectors.grid(row=0, column=0)
-        
-        # Add more parameters and visualization components
-        self.run_button = tk.Button(master, text="Run Scan", command=self.run_scan)
-        self.run_button.grid(row=1, column=0, padx=5, pady=5)
-        
-        self.result_label = tk.Label(master, text="")
-        self.result_label.grid(row=2, column=0, padx=5, pady=5)
-    def add_scanner_controls(self):
-        self.detector_type = ttk.Combobox(
-            self.param_frame,
-            values=["Linear", "Arc"]
-        )
-        self.step_angle = ttk.Scale(
-            self.param_frame,
-            from_=0.1,
-            to=5.0,
-            orient="horizontal"
-        )
-    def run_scan(self):
-        # Example parameters
-        matrix_size = 256
-        angles = np.linspace(0, 180, 180, endpoint=False)
-        detector_spacing = 1.0
-        source_distance = 100.0
-        
-        # Create a simple phantom
-        phantom = np.ones((matrix_size, matrix_size))
-        center = matrix_size // 2
-        
-        for offset in [-20, 20]:
-            y, x = np.ogrid[-center:matrix_size-center, -center+offset:matrix_size-center+offset]
-            ventricle_mask = (x*x)/(100) + (y*y)/(400) <= 1
-            phantom[ventricle_mask] = 0.1
-        
-        structures = [
-            (0, -10, 15, 0.5),
-            (0, 30, 20, 0.3),
-            (-30, 0, 10, 0.6),
-            (30, 0, 10, 0.6)
-        ]
-        
-        for pos_x, pos_y, radius, value in structures:
-            y, x = np.ogrid[-center:matrix_size-center, -center:matrix_size-center]
-            structure_mask = (x - pos_x)**2 + (y - pos_y)**2 <= radius**2
-            phantom[structure_mask] = value
-        
-        num_detectors = self.num_detectors.get()
-        sinogram = simulate_ct_scan(phantom, angles, num_detectors, detector_spacing, source_distance, matrix_size)
-        reconstruction = reconstruct_image(sinogram, angles, matrix_size)
-        
+        # Data acquisition parameters
+        ttk.Label(root, text="Number of Detectors:").grid(row=2, column=0, padx=10, pady=5, sticky='w')
+        self.num_detectors_var = tk.IntVar(value=180)
+        self.num_detectors_spinner = ttk.Spinbox(root, from_=1, to=360, textvariable=self.num_detectors_var)
+        self.num_detectors_spinner.grid(row=2, column=1, padx=10, pady=5, sticky='w')
+
+        ttk.Label(root, text="Detector Spacing:").grid(row=3, column=0, padx=10, pady=5, sticky='w')
+        self.detector_spacing_var = tk.DoubleVar(value=1.0)
+        self.detector_spacing_spinner = ttk.Spinbox(root, from_=0.1, to=10.0, increment=0.1, textvariable=self.detector_spacing_var)
+        self.detector_spacing_spinner.grid(row=3, column=1, padx=10, pady=5, sticky='w')
+
+        ttk.Label(root, text="Source Distance:").grid(row=4, column=0, padx=10, pady=5, sticky='w')
+        self.source_distance_var = tk.DoubleVar(value=100.0)
+        self.source_distance_spinner = ttk.Spinbox(root, from_=10.0, to=500.0, increment=10.0, textvariable=self.source_distance_var)
+        self.source_distance_spinner.grid(row=4, column=1, padx=10, pady=5, sticky='w')
+
+        ttk.Label(root, text="Step Angle:").grid(row=5, column=0, padx=10, pady=5, sticky='w')
+        self.step_angle_var = tk.DoubleVar(value=1.0)
+        self.step_angle_spinner = ttk.Spinbox(root, from_=0.1, to=10.0, increment=0.1, textvariable=self.step_angle_var)
+        self.step_angle_spinner.grid(row=5, column=1, padx=10, pady=5, sticky='w')
+
+        # Buttons and instructions
+        ttk.Button(root, text="Reset", command=self.reset_app).grid(row=7, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Reset all parameters and clear images").grid(row=7, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="Acquire Data", command=self.acquire_data).grid(row=8, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Generate phantom and simulate acquisition").grid(row=8, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="Reconstruct Image", command=self.reconstruct_image).grid(row=9, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Reconstruct image from sinogram").grid(row=9, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="Export Data", command=self.export_sinogram).grid(row=10, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Save sinogram data to a file").grid(row=10, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="SI & Contrast", command=self.analyze_si_contrast).grid(row=11, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Analyze signal intensity and contrast").grid(row=11, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="Image Difference", command=self.analyze_image_difference).grid(row=12, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Compute and display image difference").grid(row=12, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="SI Profiles", command=self.analyze_si_profiles).grid(row=13, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Generate and display SI profiles").grid(row=13, column=1, padx=10, pady=10, sticky='w')
+
+        ttk.Button(root, text="Compare & Contrast", command=self.compare_and_contrast).grid(row=14, column=0, padx=10, pady=10, sticky='w')
+        ttk.Label(root, text="Compare original and reconstructed images").grid(row=14, column=1, padx=10, pady=10, sticky='w')
+
+        # Initialize variables for phantom, sinogram, and reconstructed image
+        self.original_phantom = None
+        self.phantom = None
+        self.sinogram = None
+        self.reconstructed_image = None
+
+        self.update_phantom_controls()
+
+    def add_cylinder_controls(self, root):
+        self.cylinder_controls.append(ttk.Label(root, text="Rectangle Width:"))
+        self.cylinder_controls[-1].grid(row=3, column=0, padx=10, pady=5, sticky='w')
+        self.rect_width_var = tk.DoubleVar(value=0.1)
+        self.rect_width_spinner = ttk.Spinbox(root, from_=0, to=0.5, increment=0.01, textvariable=self.rect_width_var)
+        self.rect_width_spinner.grid(row=3, column=1, padx=10, pady=5, sticky='w')
+        self.cylinder_controls.append(self.rect_width_spinner)
+
+        self.cylinder_controls.append(ttk.Label(root, text="Rectangle Height:"))
+        self.cylinder_controls[-1].grid(row=4, column=0, padx=10, pady=5, sticky='w')
+        self.rect_height_var = tk.DoubleVar(value=0.2)
+        self.rect_height_spinner = ttk.Spinbox(root, from_=0, to=0.5, increment=0.01, textvariable=self.rect_height_var)
+        self.rect_height_spinner.grid(row=4, column=1, padx=10, pady=5, sticky='w')
+        self.cylinder_controls.append(self.rect_height_spinner)
+
+    def add_head_controls(self, root):
+        self.head_controls.append(ttk.Label(root, text="Number of Circles:"))
+        self.head_controls[-1].grid(row=3, column=0, padx=10, pady=5, sticky='w')
+        self.num_circles_var = tk.IntVar(value=3)
+        self.num_circles_spinner = ttk.Spinbox(root, from_=1, to=10, textvariable=self.num_circles_var)
+        self.num_circles_spinner.grid(row=3, column=1, padx=10, pady=5, sticky='w')
+        self.head_controls.append(self.num_circles_spinner)
+
+        self.head_controls.append(ttk.Label(root, text="Circle Radii:"))
+        self.head_controls[-1].grid(row=4, column=0, padx=10, pady=5, sticky='w')
+        self.circle_radii_var = tk.StringVar(value="0.1,0.2,0.3")
+        self.circle_radii_entry = ttk.Entry(root, textvariable=self.circle_radii_var)
+        self.circle_radii_entry.grid(row=4, column=1, padx=10, pady=5, sticky='w')
+        self.head_controls.append(self.circle_radii_entry)
+
+        self.head_controls.append(ttk.Label(root, text="Circle Intensities:"))
+        self.head_controls[-1].grid(row=5, column=0, padx=10, pady=5, sticky='w')
+        self.circle_intensities_var = tk.StringVar(value="1,0.8,0.6")
+        self.circle_intensities_entry = ttk.Entry(root, textvariable=self.circle_intensities_var)
+        self.circle_intensities_entry.grid(row=5, column=1, padx=10, pady=5, sticky='w')
+        self.head_controls.append(self.circle_intensities_entry)
+
+    def update_phantom_controls(self, event=None):
+        phantom_type = self.phantom_var.get()
+        if (phantom_type == "Cylinder"):
+            for control in self.cylinder_controls:
+                control.grid()
+            for control in self.head_controls:
+                control.grid_remove()
+        else:
+            for control in self.cylinder_controls:
+                control.grid_remove()
+            for control in self.head_controls:
+                control.grid()
+
+    def reset_app(self):
+        self.original_phantom = None
+        self.phantom = None
+        self.sinogram = None
+        self.reconstructed_image = None
+        self.phantom_var.set("Cylinder")
+        self.matrix_size_var.set(400)  # Set default value to 400
+        self.rect_width_var.set(0.1)
+        self.rect_height_var.set(0.2)
+        self.num_circles_var.set(3)
+        self.circle_radii_var.set("0.1,0.2,0.3")
+        self.circle_intensities_var.set("1,0.8,0.6")
+        self.update_phantom_controls()
+
+    def acquire_data(self):
+        matrix_size = self.matrix_size_var.get()
+        phantom_type = self.phantom_var.get()
+
+        if phantom_type == "Cylinder":
+            self.phantom = self.generate_cylinder_phantom(matrix_size)
+        else:
+            self.phantom = self.generate_head_phantom(matrix_size)
+
+        num_detectors = self.num_detectors_var.get()
+        detector_spacing = self.detector_spacing_var.get()
+        source_distance = self.source_distance_var.get()
+        step_angle = self.step_angle_var.get()
+
+        angles = np.arange(0, 180, step_angle)
+        self.sinogram = radon(self.phantom, angles, circle=True)
+
         plt.figure()
-        plt.subplot(1, 3, 1)
+        plt.subplot(1, 2, 1)
         plt.title("Phantom")
-        plt.imshow(phantom, cmap='gray')
-        
-        plt.subplot(1, 3, 2)
+        plt.imshow(self.phantom, cmap='gray')
+
+        plt.subplot(1, 2, 2)
         plt.title("Sinogram")
-        plt.imshow(sinogram, cmap='gray', aspect='auto')
-        
-        plt.subplot(1, 3, 3)
-        plt.title("Reconstruction")
-        plt.imshow(reconstruction, cmap='gray')
-        
+        plt.imshow(self.sinogram, cmap='gray', aspect='auto')
+
         plt.show()
-        
-        self.result_label.config(text="Scan completed")
+
+        # Print acquisition parameters
+        print(f"Acquisition Parameters:\n"
+              f"Number of Detectors: {num_detectors}\n"
+              f"Detector Spacing: {detector_spacing}\n"
+              f"Source Distance: {source_distance}\n"
+              f"Step Angle: {step_angle}\n")
+
+    def generate_cylinder_phantom(self, matrix_size):
+        phantom = np.zeros((matrix_size, matrix_size))
+        rr, cc = rectangle(start=(matrix_size//4, matrix_size//4), extent=(self.rect_height_var.get()*matrix_size, self.rect_width_var.get()*matrix_size))
+        phantom[rr, cc] = 1
+        return phantom
+
+    def generate_head_phantom(self, matrix_size):
+        phantom = np.zeros((matrix_size, matrix_size))
+        num_circles = self.num_circles_var.get()
+        radii = list(map(float, self.circle_radii_var.get().split(',')))
+        intensities = list(map(float, self.circle_intensities_var.get().split(',')))
+
+        for i in range(num_circles):
+            rr, cc = disk((random.randint(0, matrix_size), random.randint(0, matrix_size)), radii[i]*matrix_size)
+            phantom[rr, cc] = intensities[i]
+
+        return phantom
+
+    def reconstruct_image(self):
+        if self.sinogram is None:
+            messagebox.showerror("Error", "No sinogram data available. Please acquire data first.")
+            return
+
+        angles = np.arange(0, 180, self.step_angle_var.get())
+        self.reconstructed_image = iradon(self.sinogram, angles, circle=True)
+
+        plt.figure()
+        plt.subplot(1, 2, 1)
+        plt.title("Sinogram")
+        plt.imshow(self.sinogram, cmap='gray', aspect='auto')
+
+        plt.subplot(1, 2, 2)
+        plt.title("Reconstructed Image")
+        plt.imshow(self.reconstructed_image, cmap='gray')
+
+        plt.show()
+
+    def export_sinogram(self):
+        if self.sinogram is None:
+            messagebox.showerror("Error", "No sinogram data available. Please acquire data first.")
+            return
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".npy", filetypes=[("NumPy files", "*.npy")])
+        if file_path:
+            np.save(file_path, self.sinogram)
+            messagebox.showinfo("Success", f"Sinogram data saved to {file_path}")
+
+    def analyze_si_contrast(self):
+        if self.reconstructed_image is None:
+            messagebox.showerror("Error", "No reconstructed image available. Please reconstruct the image first.")
+            return
+
+        # Example analysis: calculate mean intensity and contrast
+        mean_intensity = np.mean(self.reconstructed_image)
+        contrast = np.max(self.reconstructed_image) - np.min(self.reconstructed_image)
+
+        messagebox.showinfo("SI & Contrast", f"Mean Intensity: {mean_intensity}\nContrast: {contrast}")
+
+    def analyze_image_difference(self):
+        if self.phantom is None or self.reconstructed_image is None:
+            messagebox.showerror("Error", "No phantom or reconstructed image available. Please acquire data and reconstruct the image first.")
+            return
+
+        difference = np.abs(self.phantom - self.reconstructed_image)
+
+        plt.figure()
+        plt.title("Image Difference")
+        plt.imshow(difference, cmap='gray')
+        plt.show()
+
+    def analyze_si_profiles(self):
+        if self.reconstructed_image is None:
+            messagebox.showerror("Error", "No reconstructed image available. Please reconstruct the image first.")
+            return
+
+        # Example SI profile: horizontal and vertical profiles through the center
+        center = self.reconstructed_image.shape[0] // 2
+        horizontal_profile = self.reconstructed_image[center, :]
+        vertical_profile = self.reconstructed_image[:, center]
+
+        plt.figure()
+        plt.subplot(1, 2, 1)
+        plt.title("Horizontal SI Profile")
+        plt.plot(horizontal_profile)
+
+        plt.subplot(1, 2, 2)
+        plt.title("Vertical SI Profile")
+        plt.plot(vertical_profile)
+
+        plt.show()
+
+    def compare_and_contrast(self):
+        if self.phantom is None or self.reconstructed_image is None:
+            messagebox.showerror("Error", "No phantom or reconstructed image available. Please acquire data and reconstruct the image first.")
+            return
+
+        plt.figure()
+        plt.subplot(1, 2, 1)
+        plt.title("Original Phantom")
+        plt.imshow(self.phantom, cmap='gray')
+
+        plt.subplot(1, 2, 2)
+        plt.title("Reconstructed Image")
+        plt.imshow(self.reconstructed_image, cmap='gray')
+
+        plt.show()
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = CTScannerGUI(master=root)
+    app = VirtualCTScannerApp(root)
     root.mainloop()
